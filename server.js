@@ -2,13 +2,12 @@ import express from "express";
 import puppeteer from "puppeteer";
 import cors from "cors";
 import fs from "fs";
-import fetch from "node-fetch";
 import sharp from "sharp";
 
 const app = express();
 app.use(cors());
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // 🔑 Credenciales de test
 const IG_USERNAME = "fbackend9";
@@ -98,19 +97,21 @@ app.get("/api/posts", async (req, res) => {
       });
     }
 
-    // 📸 Extraer solo publicaciones válidas
-    await page.waitForSelector("a[href*='/p/'], a[href*='/reel/']", { timeout: 20000 });
+    // 📸 Extraer posts reales
+    await page.waitForSelector("a._a6hd img", { timeout: 20000 });
 
     const posts = await page.evaluate(() => {
-      const enlaces = Array.from(document.querySelectorAll("a[href*='/p/'], a[href*='/reel/']"));
-      return enlaces.slice(0, 10).map((a) => {
-        const img = a.querySelector("img");
-        return {
-          url: a.href,
-          image: img ? img.src : null,
-          alt: img ? img.alt : null,
-        };
-      });
+      const elements = document.querySelectorAll("a._a6hd");
+      return Array.from(elements)
+        .slice(0, 10)
+        .map((el) => {
+          const img = el.querySelector("img");
+          return {
+            url: "https://www.instagram.com" + el.getAttribute("href"),
+            image: img ? img.src : null,
+            alt: img ? img.alt : null,
+          };
+        });
     });
 
     res.json({ perfil: TARGET_PROFILE, publicaciones: posts });
@@ -128,7 +129,7 @@ app.get("/api/image", async (req, res) => {
   if (!url) return res.status(400).send("Falta parámetro url");
 
   try {
-    const response = await fetch(url);
+    const response = await fetch(url); // 👈 usamos fetch nativo
     const buffer = await response.arrayBuffer();
 
     const pngBuffer = await sharp(Buffer.from(buffer)).png().toBuffer();
