@@ -1,15 +1,23 @@
 {
-  "name": "degus-api",
+  "name": "api-ig",
   "version": "1.0.0",
-  "type": "module",
+  "description": "API scraping Instagram con Puppeteer en Vercel",
   "main": "server.js",
+  "type": "module",
   "scripts": {
+    "dev": "node server.js",
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "puppeteer": "^22.6.2",
+    "@sparticuz/chromium": "^127.0.0",
     "cors": "^2.8.5",
-    "sharp": "^0.33.3"
+    "express": "^4.19.2",
+    "fs": "0.0.1-security",
+    "node-fetch": "^3.3.2",
+    "puppeteer-core": "^21.3.8",
+    "sharp": "^0.33.4"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
