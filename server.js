@@ -1,129 +1,159 @@
-import express from "express";
-import cors from "cors";
-import fs from "fs";
-import fetch from "node-fetch";
-import sharp from "sharp";
-import chromium from "@sparticuz/chromium";
-import puppeteer from "puppeteer-core";
+import express from 'express';
+import axios from 'axios';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import cors from 'cors';  // Agregado para CORS, instala con npm install cors
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
-app.use(cors());
+const port = process.env.PORT || 3000;  // Render usa PORT env, fallback a 3000
 
-const PORT = process.env.PORT || 3000;
+// Middleware para parsear JSON y CORS (permite acceso desde cualquier origen)
+app.use(express.json());
+app.use(cors({
+  origin: '*',  // Cambia a tu dominio si quieres restringir (ej: 'https://tudominio.com')
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type']
+}));
 
-const IG_USERNAME = "fbackend9";
-const IG_PASSWORD = "Degus_7777@#";
-const TARGET_PROFILE = "fundaciondegus";
-const COOKIES_PATH = "./cookies.json";
+// Servir archivos estáticos de la carpeta ../Frontend
+app.use('/Frontend', express.static(path.join(__dirname, '../Frontend')));
 
-// Guardar cookies en archivo
-async function saveCookies(page) {
-  const cookies = await page.cookies();
-  fs.writeFileSync(COOKIES_PATH, JSON.stringify(cookies, null, 2));
-}
+// Servir novedades.html directamente en /novedades
+app.get('/novedades', (req, res) => {
+  res.sendFile(path.join(__dirname, '../Frontend/novedades.html'));
+});
 
-// Cargar cookies desde archivo
-async function loadCookies(page) {
-  if (fs.existsSync(COOKIES_PATH)) {
-    const cookies = JSON.parse(fs.readFileSync(COOKIES_PATH));
-    await page.setCookie(...cookies);
-    return true;
+// Configurar cliente Axios con headers para simular navegador
+const client = axios.create({
+  headers: {
+    'x-ig-app-id': '936619743392459',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/62.0.3202.94 Safari/537.36',
+    'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Accept': '*/*'
   }
-  return false;
-}
+});
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// 📸 Scraping
-app.get("/api/posts", async (req, res) => {
-  let browser;
+async function scrapeUser(username) {
   try {
-    browser = await puppeteer.launch({
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
-      headless: chromium.headless,
-    });
-
-    const page = await browser.newPage();
-
-    let loggedIn = false;
-    if (await loadCookies(page)) {
-      await page.goto(`https://www.instagram.com/${TARGET_PROFILE}/`, {
-        waitUntil: "networkidle2",
-        timeout: 120000,
-      });
-      if (!(await page.$("input[name='username']"))) {
-        loggedIn = true;
-      }
-    }
-
-    if (!loggedIn) {
-      await page.goto("https://www.instagram.com/accounts/login/", {
-        waitUntil: "networkidle2",
-        timeout: 60000,
-      });
-
-      await page.waitForSelector("input[name='username']", { timeout: 20000 });
-      await page.type("input[name='username']", IG_USERNAME, { delay: 80 });
-      await page.type("input[name='password']", IG_PASSWORD, { delay: 80 });
-
-      await page.click("button[type='submit']");
-      await delay(8000);
-
-      await saveCookies(page);
-
-      await page.goto(`https://www.instagram.com/${TARGET_PROFILE}/`, {
-        waitUntil: "networkidle2",
-        timeout: 120000,
-      });
-    }
-
-    await page.waitForSelector("a._a6hd img", { timeout: 20000 });
-
-    const posts = await page.evaluate(() => {
-      const elements = document.querySelectorAll("a._a6hd");
-      return Array.from(elements)
-        .slice(0, 10)
-        .map((el) => {
-          const img = el.querySelector("img");
-          return {
-            url: "https://www.instagram.com" + el.getAttribute("href"),
-            image: img ? img.src : null,
-            alt: img ? img.alt : null,
-          };
-        });
-    });
-
-    res.json({ perfil: TARGET_PROFILE, publicaciones: posts });
+    const response = await client.get(
+      `https://i.instagram.com/api/v1/users/web_profile_info/?username=${username}`
+    );
+    const userData = response.data.data.user;
+    return userData;
   } catch (error) {
-    console.error("❌ Error scraping Instagram:", error.message);
-    res.status(500).json({ error: "Error obteniendo publicaciones", details: error.message });
-  } finally {
-    if (browser) await browser.close();
+    console.error('Error al scrapear usuario:', error.message);
+    throw new Error(`Error al obtener datos: ${error.message}`);
   }
-});
+}
 
-// 🔄 Convertir imágenes a PNG
-app.get("/api/image", async (req, res) => {
-  const url = req.query.url;
-  if (!url) return res.status(400).send("Falta parámetro url");
+function parseUser(userData) {
+  const totalPosts = (userData.edge_owner_to_timeline_media ? userData.edge_owner_to_timeline_media.count : 0) +
+                     (userData.edge_felix_video_timeline ? userData.edge_felix_video_timeline.count : 0);
+  
+  // Extraer posts del timeline (imágenes y videos)
+  const timelineMedia = userData.edge_owner_to_timeline_media?.edges || [];
+  const videoTimeline = userData.edge_felix_video_timeline?.edges || [];
+  const allEdges = [...timelineMedia, ...videoTimeline];
+  
+  const postsArray = allEdges.map(edge => {
+    const node = edge.node;
+    const captionEdge = node.edge_media_to_caption?.edges[0]?.node?.text || '';
+    return {
+      description: captionEdge,
+      photo: node.display_url || '',
+      link: `https://www.instagram.com/p/${node.shortcode}/`
+    };
+  }).filter(post => post.photo);
+  
+  return {
+    username: userData.username,
+    fullName: userData.full_name || 'No disponible',
+    bio: userData.biography || 'No disponible',
+    posts: totalPosts.toString(),
+    followers: userData.edge_followed_by.count.toString(),
+    following: userData.edge_follow.count.toString(),
+    postsArray
+  };
+}
+
+// Endpoint original /scrape
+app.get('/scrape', async (req, res) => {
+  const { username } = req.query;
+  
+  if (!username) {
+    return res.status(400).json({ error: 'Falta el parámetro "username". Ejemplo: /scrape?username=tuusuario' });
+  }
 
   try {
-    const response = await fetch(url);
-    const buffer = await response.arrayBuffer();
-    const pngBuffer = await sharp(Buffer.from(buffer)).png().toBuffer();
-
-    res.set("Content-Type", "image/png");
-    res.send(pngBuffer);
-  } catch (err) {
-    console.error("❌ Error convirtiendo imagen:", err.message);
-    res.status(500).send("Error procesando imagen");
+    const userData = await scrapeUser(username);
+    const parsedData = parseUser(userData);
+    res.json({ success: true, data: parsedData });
+  } catch (error) {
+    console.error('Error en scraping:', error);
+    res.status(500).json({ error: 'Error al scrapear: ' + error.message });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 API corriendo en http://localhost:${PORT}`);
+// Endpoint /api/posts (username de env o hardcoded)
+app.get('/api/posts', async (req, res) => {
+  const username = process.env.IG_USERNAME || 'fundaciondegus';  // Usa env si lo configuras en Render
+  
+  try {
+    console.log(`Scraping posts para: ${username}`);  // Log para debug
+    const userData = await scrapeUser(username);
+    const parsedData = parseUser(userData);
+    const publicaciones = parsedData.postsArray.map(post => ({
+      image: post.photo,
+      alt: post.description || 'Publicación de Fundación Degus',
+      url: post.link
+    }));
+    res.json({ publicaciones });
+  } catch (error) {
+    console.error('Error en /api/posts:', error);
+    res.status(500).json({ error: 'Error al cargar publicaciones: ' + error.message });
+  }
+});
+
+// Endpoint proxy /api/image
+app.get('/api/image', async (req, res) => {
+  const { url } = req.query;
+  
+  if (!url) {
+    return res.status(400).json({ error: 'Falta el parámetro "url" para la imagen.' });
+  }
+
+  try {
+    const response = await axios.get(url, {
+      responseType: 'arraybuffer',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/62.0.3202.94 Safari/537.36'
+      }
+    });
+
+    const contentType = response.headers['content-type'] || 'image/jpeg';
+    
+    res.set({
+      'Content-Type': contentType,
+      'Cache-Control': 'public, max-age=3600'
+    });
+    
+    res.send(Buffer.from(response.data));
+  } catch (error) {
+    console.error('Error en proxy de imagen:', error.message);
+    res.status(500).send('Error al cargar imagen');
+  }
+});
+
+// Raíz redirige a novedades
+app.get('/', (req, res) => {
+  res.redirect('/novedades');
+});
+
+app.listen(port, () => {
+  console.log(`Servidor corriendo en puerto ${port}`);
+  console.log(`Accede a: http://localhost:${port}/novedades (local) o tu URL de Render.`);
 });
